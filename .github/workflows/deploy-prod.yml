@@ -1,0 +1,87 @@
+name: Deploy Prod
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: waiuru-prod
+  USE_GKE_GCLOUD_AUTH_PLUGIN: true
+  IMAGE: waiuru-admin-condo
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: yarn install
+
+      - uses: google-github-actions/setup-gcloud@v0
+        with:
+          service_account_key: ${{ secrets.PROD_GKE_SA_KEY }}
+          project_id: ${{ env.PROJECT_ID }}
+          export_default_credentials: true
+
+      - id: secrets
+        uses: google-github-actions/get-secretmanager-secrets@v1
+        with:
+          secrets: |-
+            FIREBASE_API_KEY:${{ env.PROJECT_ID }}/FIREBASE_API_KEY
+            FIREBASE_AUTH_DOMAIN:${{ env.PROJECT_ID }}/FIREBASE_AUTH_DOMAIN
+            FIREBASE_DATABASE_URL:${{ env.PROJECT_ID }}/FIREBASE_DATABASE_URL
+            FIREBASE_PROJECT_ID:${{ env.PROJECT_ID }}/FIREBASE_PROJECT_ID
+            FIREBASE_STORAGE_BUCKET:${{ env.PROJECT_ID }}/FIREBASE_STORAGE_BUCKET
+            FIREBASE_MESSAGING_SENDER_ID:${{ env.PROJECT_ID }}/FIREBASE_MESSAGING_SENDER_ID
+            FIREBASE_APP_ID:${{ env.PROJECT_ID }}/FIREBASE_APP_ID
+            FIREBASE_MEASUREMENT_ID:${{ env.PROJECT_ID }}/FIREBASE_MEASUREMENT_ID
+            FIREBASE_CLIENT_EMAIL:${{ env.PROJECT_ID }}/FIREBASE_CLIENT_EMAIL
+            FIREBASE_PRIVATE_KEY:${{ env.PROJECT_ID }}/FIREBASE_PRIVATE_KEY
+            API_URL:${{ env.PROJECT_ID }}/API_URL
+
+      - name: generate env file
+        env:
+          FIREBASE_API_KEY: ${{ steps.secrets.outputs.FIREBASE_API_KEY }}
+          FIREBASE_AUTH_DOMAIN: ${{ steps.secrets.outputs.FIREBASE_AUTH_DOMAIN }}
+          FIREBASE_DATABASE_URL: ${{ steps.secrets.outputs.FIREBASE_DATABASE_URL }}
+          FIREBASE_PROJECT_ID: ${{ steps.secrets.outputs.FIREBASE_PROJECT_ID }}
+          FIREBASE_STORAGE_BUCKET: ${{ steps.secrets.outputs.FIREBASE_STORAGE_BUCKET }}
+          FIREBASE_MESSAGING_SENDER_ID: ${{ steps.secrets.outputs.FIREBASE_MESSAGING_SENDER_ID }}
+          FIREBASE_APP_ID: ${{ steps.secrets.outputs.FIREBASE_APP_ID }}
+          FIREBASE_MEASUREMENT_ID: ${{ steps.secrets.outputs.FIREBASE_MEASUREMENT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ steps.secrets.outputs.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ steps.secrets.outputs.FIREBASE_PRIVATE_KEY }}
+          API_URL: ${{ steps.secrets.outputs.API_URL }}
+        run: |
+          . .github/scripts/envGenerator.sh
+
+      - run: |-
+          gcloud --quiet auth configure-docker
+
+      - name: Build
+        run: |-
+          docker build \
+            -t "gcr.io/$PROJECT_ID/prod/$IMAGE:$GITHUB_SHA" \
+            -t "gcr.io/$PROJECT_ID/prod/$IMAGE:latest" \
+            --build-arg GITHUB_SHA="$GITHUB_SHA" \
+            --build-arg GITHUB_REF="$GITHUB_REF" \
+            .
+
+      - name: Publish
+        run: |-
+          docker push "gcr.io/$PROJECT_ID/prod/$IMAGE:$GITHUB_SHA"
+          docker push "gcr.io/$PROJECT_ID/prod/$IMAGE:latest"
+
+      - name: Generate GCR image path
+        shell: bash
+        run: echo "path=$(echo gcr.io/$PROJECT_ID/prod/$IMAGE:$GITHUB_SHA)" >>$GITHUB_OUTPUT
+        id: image_path
+
+      - id: deploy
+        uses: google-github-actions/deploy-cloudrun@v1
+        with:
+          service: prod-admin-condo
+          image: ${{ steps.image_path.outputs.path }}
+          flags: --allow-unauthenticated
+
+      - name: Use output
+        run: curl "${{ steps.deploy.outputs.url }}"
